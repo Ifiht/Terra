@@ -1,0 +1,3 @@
+[submodule "platforms/bukkit/run/plugins/Terra/packs"]
+	path = platforms/bukkit/run/plugins/Terra/packs
+	url = git@github.com:Ifiht/Cosmere.git
