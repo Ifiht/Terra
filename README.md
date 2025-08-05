@@ -16,9 +16,6 @@ Terra consists of several parts:
 * Several "core addons," which implement the "default" configurations of Terra.
   These addons can be thought of as the config "standard library"
 
-Terra currently officially supports the Fabric mod loader and the Bukkit API
-(Paper and friends). We welcome Pull Requests implementing additional platforms!
-
 ## Modifications:
 This version of Terra has been pinned to Minecraft 1.21.4, and stripped down to just the Bukkit (Paper) plugin.
 
