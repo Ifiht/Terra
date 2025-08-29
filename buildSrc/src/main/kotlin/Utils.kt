@@ -50,7 +50,7 @@ fun Project.versionProjects(project: String, version: String) {
 
 fun Project.version(version: String): String {
     return if (!isPrerelease)
-        version
+        "$version-SEED"
     else //Only use git hash if it's a prerelease.
-        "$version-BETA+${getGitHash()}"
+        "$version-SEED+${getGitHash()}"
 }

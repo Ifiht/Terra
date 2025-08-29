@@ -144,7 +144,7 @@ fun Project.configureDistribution() {
         // Tell shadow to download the packs
         dependsOn(downloadDefaultPacks)
         configurations = listOf(project.configurations["shaded"])
-        archiveClassifier.set("shaded")
+        archiveClassifier.set("all")
         version = project.version
         relocate("org.apache.commons", "com.dfsek.terra.lib.commons")
         relocate("org.objectweb.asm", "com.dfsek.terra.lib.asm")
