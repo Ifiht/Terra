@@ -436,6 +436,11 @@ public class ConfigPackImpl implements ConfigPack {
     }
 
     @Override
+    public boolean disableStructures() {
+        return template.disableStructures();
+    }
+
+    @Override
     public Context getContext() {
         return context;
     }

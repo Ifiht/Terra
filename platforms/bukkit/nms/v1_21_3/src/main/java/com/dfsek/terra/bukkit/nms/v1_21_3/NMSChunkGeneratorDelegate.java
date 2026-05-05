@@ -71,6 +71,7 @@ public class NMSChunkGeneratorDelegate extends ChunkGenerator {
     @Override
     public void applyBiomeDecoration(@NotNull WorldGenLevel world, @NotNull ChunkAccess chunk,
                                      @NotNull StructureManager structureAccessor) {
+        if(pack.disableStructures()) return;
         vanilla.applyBiomeDecoration(world, chunk, structureAccessor);
     }
 

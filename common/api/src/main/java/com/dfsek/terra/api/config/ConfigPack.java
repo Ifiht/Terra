@@ -60,4 +60,6 @@ public interface ConfigPack extends LoaderRegistrar,
     }
 
     ChunkGeneratorProvider getGeneratorProvider();
+
+    boolean disableStructures();
 }
