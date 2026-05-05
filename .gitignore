@@ -251,3 +251,6 @@ platforms/**/run/**
 
 #Vale Config File
 **/.vale.ini
+
+### Other projects
+/Terra62
