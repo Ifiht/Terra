@@ -1,0 +1,3 @@
+[submodule "packs"]
+	path = packs
+	url = git@github.com:Ithavollr/Cosmere.git
