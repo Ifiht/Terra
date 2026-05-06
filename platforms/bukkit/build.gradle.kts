@@ -1,3 +1,6 @@
+import org.gradle.kotlin.dsl.register
+import xyz.jpenilla.runpaper.task.RunServer
+
 plugins {
     id("xyz.jpenilla.run-paper") version Versions.Bukkit.runPaper
 }
@@ -31,6 +34,27 @@ tasks {
             modrinth("viabackwards", "5.2.0")
         }
     }
+}
+
+// Test Paper run & immediately shut down, for github actions
+tasks.register<RunServer>("runServerTest") {
+    dependsOn(tasks.shadowJar)
+    // Accept a Minecraft version via -PmcVersion=1.21.5, default to 1.21.4
+    val mcVersion = project.findProperty("mcVersion") as String? ?: "1.21.4"
+    minecraftVersion(mcVersion)
+    downloadPlugins {
+        github("Ifiht", "AutoStop", "v1.2.0", "AutoStop-1.2.0.jar")
+    }
+    pluginJars.from(tasks.shadowJar)
+}
+// Start a local test server for login & manual testing
+tasks.register<RunServer>("runServerInteractive_1-21-4") {
+    dependsOn(tasks.shadowJar)
+    minecraftVersion("1.21.4")
+    downloadPlugins {
+        hangar("Multiverse-Core", "5.6.1")
+    }
+    pluginJars.from(tasks.shadowJar)
 }
 
 

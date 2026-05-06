@@ -1,315 +1,230 @@
-# SPEC — Work Item 1: Multi-Noise Approximated Biome Provider
+# SPEC — Work Item 3: Surface Palettes for Vanilla Biomes
 
 ## Scope
-Build a **pack-level** biome provider that approximates vanilla Minecraft's multi-noise biome placement using Terra's existing `biome-provider-pipeline-v2` and `biome-provider-extrusion` addons. No new Java provider is written; we compose the approximation entirely from YAML configs, Expression-based noise samplers, and pipeline/extrusion stages.
+Create Terra `PALETTE` configs and per-biome `palette:` Y-level mappings that replicate vanilla Minecraft's surface block layers. Terra's `NOISE_3D` chunk generator bypasses vanilla `buildSurface`, so every biome must explicitly define its surface layers (grass/dirt, sand, snow, etc.) via Terra's palette system.
+
+## Background: Terra Palette System
+
+Terra uses three interlocking config types:
+
+1. **Palette definitions** (`palettes/*.yml`, `type: PALETTE`) — Define block layers (`materials` + `layers` depth).
+2. **Biome palette mappings** (`palette:` in biome `.yml`) — List of `PALETTE_ID: Y_LEVEL` entries. Each entry means "use this palette from this Y level down to the next lower entry."
+3. **Meta merge keys** (`<< meta.yml:palette-bottom`) — YAML merge anchors that append deepslate/bedrock layers to every biome.
+
+### Example Palette Definition
+```yaml
+id: GRASS_AND_DIRT
+type: PALETTE
+layers:
+  - materials:
+      - minecraft:grass_block: 1
+    layers: 1
+  - materials:
+      - minecraft:dirt: 1
+    layers: 3
+  - materials:
+      - minecraft:stone: 1
+    layers: 1
+```
+
+### Example Biome Palette Mapping
+```yaml
+palette:
+  - GRASS_AND_DIRT: 319      # from Y=319 down to Y=64
+  - SAND: 64                 # from Y=64 down to Y=61
+  - << meta.yml:palette-bottom  # deepslate at Y=7, bedrock at Y=-60
+```
 
 ## Design Goals
-1. **Approximate**, not replicate, vanilla multi-noise. Terra's noise library (`OpenSimplex2`, `Cellular`, etc.) will not match vanilla `shifted_noise` / `flat_cache` exactly, but will produce similar continental/temperature/humidity banding.
-2. **Five tunable noise axes**: `continentalness`, `temperature`, `humidity` (vegetation), `erosion`, `weirdness` (ridges). Each axis has a `floor` and `ceiling` meta-parameter so a single config change can force an entire world to be, e.g., all-cold, all-desert, or all-tropical-rainforest.
-3. **Land/sea ratio** is tunable via a `land_threshold` parameter that shifts the continentalness cutoff between ocean and land biomes.
-4. **Vanilla biome ID mapping**: Every biome definition references its vanilla counterpart (`vanilla: minecraft:plains`) so that when NMS `applyBiomeDecoration` runs, vanilla sees the correct biome and places the correct structures, ores, and vegetation.
-5. **Terrain sampler linkage**: Each biome definition also binds to a Terra terrain sampler (defined in Work Item 3) so that shape (height, caves, surface) is decoupled from biome identity.
-6. **3D biome support**: Cave biomes (`deep_dark`, `dripstone_caves`, `lush_caves`) are handled natively via the `EXTRUSION` provider layered on top of the 2D surface pipeline.
+1. **Replicate vanilla surface layers** for all 32 implemented biomes (9 oceans + 20 land + 3 cave).
+2. **Share common palettes** — Don't duplicate; use reusable palette IDs (`GRASS_AND_DIRT`, `SAND`, `SNOW`, etc.).
+3. **Handle ocean biomes** — Set `ocean.level: 63` and `ocean.palette` (water + seafloor) for all aquatic biomes.
+4. **Add slant palettes** for steep terrain (mountains, cliffs) where exposed stone/gravel should show.
+5. **Fix biome YAML structure** — Move `palette` from incorrectly nested `terrain.palette` to root-level `palette:`.
 
-## Architecture
+## Palette Catalog
 
-### 1. Top-Level Provider: EXTRUSION
+### Shared Land Palettes
+| Palette ID | Layers | Used By |
+|---|---|---|
+| `GRASS` | grass_block → dirt → stone | PLAINS, FOREST, MEADOW, WINDSWEPT_HILLS |
+| `GRASS_PODZOL` | grass_block/podzol mix → dirt → stone | JUNGLE, OLD_GROWTH_SPRUCE_TAIGA |
+| `DIRT_COARSE` | grass_block/coarse_dirt → dirt → stone | SAVANNA |
+| `SAND` | sand → sandstone → stone | DESERT, BADLANDS (beach layer) |
+| `SNOW` | snow_block → dirt → stone | SNOWY_TUNDRA, SNOWY_TAIGA |
+| `SNOW_ICE` | snow_block → packed_ice → stone | ICE_SPIKES, FROZEN_PEAKS |
+| `STONE` | stone → deepslate | JAGGED_PEAKS, STONY_PEAKS |
+| `STONE_CALCITE` | calcite → stone → deepslate | STONY_PEAKS |
+| `TERRACOTTA` | terracotta → red_sand → stone | BADLANDS |
+| `CLAY` | grass_block → clay → dirt → stone | SWAMP |
+| `GRAVEL` | gravel → stone | WINDSWEPT_GRAVELLY_HILLS, ocean floors |
+| `SAND_GRAVEL` | sand → gravel → stone | Normal ocean floors |
+| `GRAVEL_SAND` | gravel → sand → stone | Deep ocean floors |
 
-The `EXTRUSION` provider is already registered by the `biome-provider-extrusion` addon in the current codebase. It wraps a 2D base provider and applies Y-level-dependent extrusion layers.
+### Ocean Palettes
+| Palette ID | Layers | Used By |
+|---|---|---|
+| `OCEAN_WATER` | water (with sand floor below Y=61) | All oceans as `ocean.palette` |
 
+### Cave Palettes
+| Palette ID | Layers | Used By |
+|---|---|---|
+| `DEEPSLATE` | deepslate → bedrock | DEEP_DARK |
+| `DRIPSTONE` | dripstone_block → deepslate | DRIPSTONE_CAVES |
+| `MOSS_CLAY` | moss_block → clay → deepslate | LUSH_CAVES |
+
+## Ocean Configuration
+
+All ocean biomes need:
 ```yaml
-# biome-providers/extrusion.yml
-id: VANILLA_3D
-type: BIOME_PROVIDER
-provider: EXTRUSION
-base: VANILLA_PIPELINE  # 2D surface pipeline
-extrusions:
-  # Deep Dark: spawns below Y=0 in areas with low cave_noise
-  - type: REPLACE
-    from: "*"
-    to: DEEP_DARK
-    noise: deep_dark_noise
-    min-y: -64
-    max-y: 0
-
-  # Dripstone Caves
-  - type: REPLACE
-    from: "*"
-    to: DRIPSTONE_CAVES
-    noise: dripstone_cave_noise
-    min-y: -64
-    max-y: 60
-
-  # Lush Caves
-  - type: REPLACE
-    from: "*"
-    to: LUSH_CAVES
-    noise: lush_cave_noise
-    min-y: -64
-    max-y: 60
+ocean:
+  level: 63
+  palette:
+    - OCEAN_WATER: 319
 ```
 
-### 2. Base Provider: PIPELINE (2D Surface Biomes)
-
-The `PIPELINE` provider is registered by `biome-provider-pipeline-v2`. It resolves surface biomes through a sequence of stages.
-
+The `OCEAN_WATER` palette uses a noise sampler to place ice in frozen oceans:
 ```yaml
-# biome-providers/pipeline.yml
-id: VANILLA_PIPELINE
-type: BIOME_PROVIDER
-provider: PIPELINE
-resolution: 4
-
-pipeline:
-  source:
-    type: SAMPLER
-    sampler: continental
-    biomes:
-      - OCEAN: ${meta:land_threshold}
-      - LAND: ${meta:land_threshold}
-  stages:
-    # (see Stage Configs below)
+id: OCEAN_WATER
+type: PALETTE
+layers:
+  - materials:
+      - minecraft:water: 1
+      - minecraft:ice: 6   # weighted for frozen oceans
+    layers: 1
+    sampler:  # noise-driven ice patches for frozen variants
+  - materials: minecraft:water
+    layers: 1
 ```
 
-### 3. Global Tunable Parameters (`meta.yml`)
+## Biome Palette Mappings
 
-Pack-scoped values consumed by the Expression samplers. Changing these reconfigures the world without editing individual biome or stage files.
+### Aquatic Biomes
+| Biome | Palette Mapping |
+|---|---|
+| `FROZEN_OCEAN` | `FROZEN_OCEAN: 319` (ice/water mix), `SAND_GRAVEL: 61`, bottom |
+| `COLD_OCEAN` | `SAND_GRAVEL: 319`, bottom |
+| `OCEAN` | `SAND: 319`, bottom |
+| `LUKEWARM_OCEAN` | `SAND: 319`, bottom |
+| `WARM_OCEAN` | `SAND: 319`, bottom |
+| `DEEP_FROZEN_OCEAN` | `GRAVEL: 319`, bottom |
+| `DEEP_COLD_OCEAN` | `GRAVEL: 319`, bottom |
+| `DEEP_OCEAN` | `GRAVEL: 319`, bottom |
+| `DEEP_LUKEWARM_OCEAN` | `GRAVEL: 319`, bottom |
 
-```yaml
-meta:
-  # Continentalness axis (-1.0 = deep ocean, +1.0 = inland/mountains)
-  continental_floor: -1.0
-  continental_ceiling: 1.0
-  land_threshold: 0.0       # Above = land; below = ocean
+### Land Biomes
+| Biome | Palette Mapping |
+|---|---|
+| `PLAINS` | `GRASS: 319`, `SAND: 64`, bottom |
+| `FOREST` | `GRASS: 319`, `SAND: 64`, bottom |
+| `BIRCH_FOREST` | `GRASS: 319`, `SAND: 64`, bottom |
+| `DARK_FOREST` | `GRASS: 319`, `SAND: 64`, bottom |
+| `JUNGLE` | `GRASS_PODZOL: 319`, `SAND: 64`, bottom |
+| `SAVANNA` | `DIRT_COARSE: 319`, `SAND: 64`, bottom |
+| `DESERT` | `SAND: 319`, bottom |
+| `BADLANDS` | `TERRACOTTA: 319`, bottom |
+| `SWAMP` | `CLAY: 319`, bottom |
+| `SNOWY_TUNDRA` | `SNOW: 319`, bottom |
+| `SNOWY_TAIGA` | `SNOW: 319`, bottom |
+| `TAIGA` | `GRASS: 319`, `SAND: 64`, bottom |
+| `OLD_GROWTH_SPRUCE_TAIGA` | `GRASS_PODZOL: 319`, `SAND: 64`, bottom |
+| `ICE_SPIKES` | `SNOW_ICE: 319`, bottom |
+| `MEADOW` | `GRASS: 319`, `SAND: 64`, bottom |
+| `WINDSWEPT_HILLS` | `GRASS: 319`, `GRAVEL: 64`, bottom |
+| `WINDSWEPT_GRAVELLY_HILLS` | `GRAVEL: 319`, bottom |
+| `JAGGED_PEAKS` | `STONE: 319`, bottom |
+| `STONY_PEAKS` | `STONE_CALCITE: 319`, bottom |
+| `FROZEN_PEAKS` | `SNOW_ICE: 319`, bottom |
 
-  # Temperature axis (-1.0 = frozen, +1.0 = hot)
-  temperature_floor: -1.0
-  temperature_ceiling: 1.0
+### Cave Biomes
+| Biome | Palette Mapping |
+|---|---|
+| `DEEP_DARK` | `DEEPSLATE: 319`, bedrock bottom |
+| `DRIPSTONE_CAVES` | `DRIPSTONE: 319`, bottom |
+| `LUSH_CAVES` | `MOSS_CLAY: 319`, bottom |
 
-  # Humidity / vegetation axis (-1.0 = arid, +1.0 = humid)
-  humidity_floor: -1.0
-  humidity_ceiling: 1.0
+## Slant Configuration
 
-  # Erosion axis (-1.0 = flat/eroded, +1.0 = rugged/un-eroded)
-  erosion_floor: -1.0
-  erosion_ceiling: 1.0
-
-  # Weirdness / ridges axis (-1.0 = valleys, +1.0 = peaks)
-  weirdness_floor: -1.0
-  weirdness_ceiling: 1.0
-
-  # World-type shortcuts (commented examples)
-  # Setting temp_floor = temp_ceiling = 0.8  → all-hot (desert/savanna/jungle)
-  # Setting continental_floor = continental_ceiling = -0.5 → all-ocean
-```
-
-### 4. Noise Samplers (`noise/biome-samplers.yml`)
-
-Five `EXPRESSION` samplers using Terra's built-in `open_simplex_2` (registered by `NoiseAddon`). Each sampler clamps to the global meta floor/ceiling.
-
-```yaml
-noise:
-  continental:
-    type: EXPRESSION
-    variables:
-      raw: "open_simplex_2(x/2048, z/2048)"
-    expression: "clamp(raw, ${meta:continental_floor}, ${meta:continental_ceiling})"
-
-  temperature:
-    type: EXPRESSION
-    variables:
-      raw: "open_simplex_2(x/1024 + 1000, z/1024)"
-    expression: "clamp(raw, ${meta:temperature_floor}, ${meta:temperature_ceiling})"
-
-  humidity:
-    type: EXPRESSION
-    variables:
-      raw: "open_simplex_2(x/1024, z/1024 + 2000)"
-    expression: "clamp(raw, ${meta:humidity_floor}, ${meta:humidity_ceiling})"
-
-  erosion:
-    type: EXPRESSION
-    variables:
-      raw: "open_simplex_2(x/512 + 3000, z/512)"
-    expression: "clamp(raw, ${meta:erosion_floor}, ${meta:erosion_ceiling})"
-
-  weirdness:
-    type: EXPRESSION
-    variables:
-      raw: "open_simplex_2(x/512, z/512 + 4000)"
-    expression: "clamp(raw, ${meta:weirdness_floor}, ${meta:weirdness_ceiling})"
-
-  # Cave noises (3D, used by EXTRUSION provider)
-  deep_dark_noise:
-    type: EXPRESSION
-    variables:
-      raw: "open_simplex_2(x/256, y/64, z/256 + 5000)"
-    expression: "raw > 0.6 ? 1 : 0"
-
-  dripstone_cave_noise:
-    type: EXPRESSION
-    variables:
-      raw: "open_simplex_2(x/256, y/64, z/256 + 6000)"
-    expression: "raw > 0.5 ? 1 : 0"
-
-  lush_cave_noise:
-    type: EXPRESSION
-    variables:
-      raw: "open_simplex_2(x/256, y/64, z/256 + 7000)"
-    expression: "raw > 0.5 ? 1 : 0"
-```
-
-> **Note**: `open_simplex_2` is already registered by `NoiseAddon.java`. Scale factors (`/2048`, `/1024`, `/512`) are tuned to approximate vanilla continent size, climate patch size, and local feature size. The 3D cave samplers use `y` for vertical variation.
-
-### 5. Pipeline Stage Sequence (Surface Biomes)
-
-| Stage | From | To | Noise | Description |
-|---|---|---|---|---|
-| 1 | `OCEAN` | 5 ocean biomes by temp band | `temperature` | `FROZEN_OCEAN` → `WARM_OCEAN` |
-| 2 | `LAND` | 5 temp-band placeholders | `temperature` | `LAND_FROZEN` → `LAND_HOT` |
-| 3 | `LAND_FROZEN` | 2 humidity variants | `humidity` | `SNOWY_TUNDRA`, `ICE_SPIKES` |
-| 4 | `LAND_COLD` | 3 humidity variants | `humidity` | `SNOWY_TAIGA`, `TAIGA`, `OLD_GROWTH_SPRUCE_TAIGA` |
-| 5 | `LAND_TEMPERATE` | 5 humidity variants | `humidity` | `PLAINS`, `FOREST`, `BIRCH_FOREST`, `DARK_FOREST`, `SWAMP` |
-| 6 | `LAND_WARM` | 4 humidity variants | `humidity` | `SAVANNA`, `PLAINS`, `FOREST`, `JUNGLE` |
-| 7 | `LAND_HOT` | 4 humidity variants | `humidity` | `DESERT`, `SAVANNA`, `BADLANDS`, `JUNGLE` |
-| 8 | All land | Erosion-based terrain form | `erosion` | Flat → hilly within each biome |
-| 9 | High erosion land | Weirdness-based peak variants | `weirdness` | `MEADOW` → `JAGGED_PEAKS` / `STONY_PEAKS` |
-
-> **Implementation detail**: Each stage uses `REPLACE` (not `REPLACE_LIST`) with a threshold sampler. `REPLACE` evaluates a `ProbabilityCollection<PipelineBiome>` against a single scalar sampler value. We pre-quantize each axis into bands by using `EXPRESSION` threshold samplers that return a scalar matching the ProbabilityCollection weights.
-
-### 6. Stage Configs (YAML)
-
-Each stage is a separate file in `biome-providers/stages/` for maintainability.
+Mountain and cliff biomes need slant palettes so steep faces show stone/gravel instead of grass/snow:
 
 ```yaml
-# biome-providers/stages/01-temperature-oceans.yml
-type: REPLACE
-from: OCEAN
-to:
-  FROZEN_OCEAN: 0.15
-  COLD_OCEAN: 0.25
-  OCEAN: 0.35
-  LUKEWARM_OCEAN: 0.45
-  WARM_OCEAN: 0.55
-noise:
-  type: EXPRESSION
-  expression: "clamp(temperature, -1.0, 1.0)"
+slant:
+  - threshold: 4
+    palette:
+      - BLOCK:minecraft:stone: 319
+      - << meta.yml:palette-bottom
 ```
+
+Biomes requiring slant:
+- `WINDSWEPT_HILLS`, `WINDSWEPT_GRAVELLY_HILLS`, `JAGGED_PEAKS`, `STONY_PEAKS`, `FROZEN_PEAKS`
+
+## Meta.yml Additions
 
 ```yaml
-# biome-providers/stages/02-temperature-land.yml
-type: REPLACE
-from: LAND
-to:
-  LAND_FROZEN: -0.45
-  LAND_COLD: -0.15
-  LAND_TEMPERATE: 0.15
-  LAND_WARM: 0.45
-  LAND_HOT: 0.75
-noise:
-  type: EXPRESSION
-  expression: "clamp(temperature, -1.0, 1.0)"
+strata:
+  deepslate:
+    top: 7
+    bottom: -7
+  bedrock:
+    top: -60
+    bottom: -64
+
+palette-bottom:
+  - DEEPSLATE_STRATA: $meta.yml:strata.deepslate.top
+  - BEDROCK_STRATA: $meta.yml:strata.bedrock.top
+  - BLOCK:minecraft:bedrock: $meta.yml:strata.bedrock.bottom
 ```
 
-```yaml
-# biome-providers/stages/08-erosion-landforms.yml
-type: REPLACE
-from: PLAINS
-to:
-  WINDSWEPT_HILLS: 0.3
-  WINDSWEPT_GRAVELLY_HILLS: 0.5
-  MEADOW: 0.7
-noise:
-  type: EXPRESSION
-  expression: "clamp(erosion, -1.0, 1.0)"
-```
-
-```yaml
-# biome-providers/stages/09-weirdness-peaks.yml
-type: REPLACE
-from: MEADOW
-to:
-  FROZEN_PEAKS: -0.3
-  JAGGED_PEAKS: 0.0
-  STONY_PEAKS: 0.3
-noise:
-  type: EXPRESSION
-  expression: "clamp(weirdness, -1.0, 1.0)"
-```
-
-### 7. Biome Definitions (`biomes/*.yml`)
-
-Each file defines one vanilla-mapped biome. The `vanilla` key is critical for NMS decoration passthrough.
-
-```yaml
-id: PLAINS
-vanilla: minecraft:plains
-
-color:
-  fog: 12638463
-  water: 4159204
-  water-fog: 329011
-  sky: 7907327
-
-# Terra terrain linkage — references a sampler from Work Item 3
-terrain:
-  sampler: terrain/overworld/land/flat
-  palette: palettes/grass_and_dirt
-```
-
-A complete pack needs ~70 surface biome definitions (oceans, rivers, all land variants, hills, peaks) plus ~10 cave/underground biomes handled by extrusion.
-
-### 8. Cave Biomes via EXTRUSION
-
-Cave biomes are **not** resolved by the 2D pipeline. The `EXTRUSION` provider receives the surface biome from the `PIPELINE` base, then checks each extrusion layer in order. The first matching layer wins.
-
-The extrusion config uses `min-y` / `max-y` for vertical bounds and a `noise` sampler for horizontal distribution. The `REPLACE` type accepts `from: "*"` meaning "match any surface biome."
-
-This is a true 3D biome system: `getBiome(x, y, z, seed)` samples the base pipeline at (x, z), then queries the extrusion layers for that Y level.
-
-## Files to Create / Modify in `packs/BASE/`
+## Files to Create / Modify
 
 | File | Action | Purpose |
 |---|---|---|
-| `meta.yml` | Create | Global tunable parameters (floors, ceilings, land_threshold) |
-| `noise/biome-samplers.yml` | Create | 5 surface noise samplers + 3 cave noise samplers |
-| `biome-providers/extrusion.yml` | Create | Top-level `EXTRUSION` provider wrapping the pipeline |
-| `biome-providers/pipeline.yml` | Create | 2D `PIPELINE` provider for surface biomes |
-| `biome-providers/sources/continental-source.yml` | Create | `SAMPLER` source: continental → `OCEAN`/`LAND` |
-| `biome-providers/stages/01-temperature-oceans.yml` | Create | Ocean stratification by temperature |
-| `biome-providers/stages/02-temperature-land.yml` | Create | Land stratification into 5 temp bands |
-| `biome-providers/stages/03-humidity-frozen.yml` | Create | Frozen land humidity variants |
-| `biome-providers/stages/04-humidity-cold.yml` | Create | Cold land humidity variants |
-| `biome-providers/stages/05-humidity-temperate.yml` | Create | Temperate land humidity variants |
-| `biome-providers/stages/06-humidity-warm.yml` | Create | Warm land humidity variants |
-| `biome-providers/stages/07-humidity-hot.yml` | Create | Hot land humidity variants |
-| `biome-providers/stages/08-erosion-landforms.yml` | Create | Flat → hilly terrain within biomes |
-| `biome-providers/stages/09-weirdness-peaks.yml` | Create | Valley → peak variants in high terrain |
-| `biomes/aquatic/*.yml` | Create (~12) | Oceans, deep oceans, rivers, frozen variants |
-| `biomes/land/*.yml` | Create (~60) | All surface biomes including hills/mountain variants |
-| `biomes/cave/*.yml` | Create (~10) | Deep Dark, Dripstone Caves, Lush Caves (referenced by extrusion) |
-| `pack.yml` | Modify | Set `biomes` key to reference `VANILLA_3D` |
+| `meta.yml` | Modify | Add `strata:` and `palette-bottom:` merge anchors |
+| `palettes/land/grass.yml` | Create | Standard grass/dirt/stone |
+| `palettes/land/grass_podzol.yml` | Create | Podzol mix for jungles/taigas |
+| `palettes/land/dirt_coarse.yml` | Create | Coarse dirt for savanna |
+| `palettes/land/sand.yml` | Create | Sand/sandstone/stone |
+| `palettes/land/terracotta.yml` | Create | Terracotta/red_sand/stone |
+| `palettes/land/snow.yml` | Create | Snow_block/dirt/stone |
+| `palettes/land/snow_ice.yml` | Create | Snow/packed_ice/stone |
+| `palettes/land/stone.yml` | Create | Stone/deepslate |
+| `palettes/land/stone_calcite.yml` | Create | Calcite/stone/deepslate |
+| `palettes/land/clay.yml` | Create | Grass/clay/dirt/stone for swamp |
+| `palettes/land/gravel.yml` | Create | Gravel/stone |
+| `palettes/aquatic/sand_gravel.yml` | Create | Sand/gravel/stone (ocean floor) |
+| `palettes/aquatic/gravel_sand.yml` | Create | Gravel/sand/stone (deep ocean) |
+| `palettes/aquatic/ocean_water.yml` | Create | Water/ice noise sampler for ocean fill |
+| `palettes/cave/deepslate.yml` | Create | Deepslate/bedrock |
+| `palettes/cave/dripstone.yml` | Create | Dripstone_block/deepslate |
+| `palettes/cave/moss_clay.yml` | Create | Moss_block/clay/deepslate |
+| `palettes/strata/deepslate.yml` | Create | Deepslate strata transition |
+| `palettes/strata/bedrock.yml` | Create | Bedrock strata transition |
+| `biomes/aquatic/*.yml` | Modify | Add `ocean:` and fix `palette` placement |
+| `biomes/aquatic/deep_frozen_ocean.yml` | Create | Deep frozen ocean biome |
+| `biomes/aquatic/deep_cold_ocean.yml` | Create | Deep cold ocean biome |
+| `biomes/aquatic/deep_ocean.yml` | Create | Deep ocean biome |
+| `biomes/aquatic/deep_lukewarm_ocean.yml` | Create | Deep lukewarm ocean biome |
+| `biomes/land/*.yml` | Modify | Fix `palette` placement, add `slant` where needed |
+| `biomes/cave/*.yml` | Modify | Fix `palette` placement |
 
-## Assumptions / Risks
+## Known Limitations
 
-1. **REPLACE stage threshold syntax**: The existing `ReplaceStage` uses `ProbabilityCollection<PipelineBiome>` driven by a scalar sampler value. The syntax `FROZEN_OCEAN: 0.15` means "if sampler value ≤ 0.15, return FROZEN_OCEAN". ProbabilityCollection cumulative ordering determines band boundaries. This is functionally equivalent to threshold ranges but expressed as scalar cutoffs.
+1. **No beach blending** — Terra palettes switch abruptly at Y-level thresholds. There is no "beach" transition palette that blends sand into grass over a few blocks. The `SAND: 64` layer in land biomes approximates a beach below sea level, but above-water beaches will look sharp.
 
-2. **EXTRUSION provider availability**: The `biome-provider-extrusion` addon is present in `common/addons/` and registered in the current codebase. It requires the base provider to implement `getBaseBiome()` (returning a non-empty Optional). `PipelineBiomeProvider` does this. Confirmed working.
+2. **No vanilla surface builders** — Terra's chunk generator calls its own surface placement code, not vanilla's `SurfaceBuilder` classes. Features like podzol patches, mossy stone, or coarse dirt blobs must be approximated via noise samplers in palette layers or deferred to Terra feature configs.
 
-3. **Performance**: 9 pipeline stages + 3 extrusion layers evaluated per biome sample. Resolution 4 (one decision per 4×4 column) plus Caffeine LoadingCache in `PipelineBiomeProvider` keeps this lightweight. 3D cave noise adds one extra dimension but only for Y-levels where extrusion is active.
+3. **Slant threshold is global** — The `slant.threshold: 4` value applies to all slanted terrain in the biome. Fine-grained control (e.g., gentle slopes keep grass, only cliffs show stone) requires a custom slant palette with multiple thresholds, which is supported but more verbose.
 
-4. **Vanilla decoration compatibility**: Because every biome has `vanilla: minecraft:XXX`, NMS `applyBiomeDecoration` places the correct vanilla features, ores, and structures for that biome. Terra's Bukkit populator also runs (for custom trees) but we've removed non-tree Terra features so there's no conflict.
+4. **River banks** — Vanilla uses `SurfaceBuilder` to carve river banks and replace exposed dirt with grass. Terra's palette system has no equivalent; river-shaped terrain will show whatever palette is mapped at that Y level.
 
-5. **River biomes**: Vanilla places rivers via a separate noise parameter (river noise) that cuts through land biomes. Terra's pipeline does not have a native "river carve" stage. We approximate rivers by:
-   - Adding a `river` noise sampler
-   - Adding an early pipeline stage that replaces a narrow `river_noise` band with `RIVER` biome
-   - Or accepting that rivers will be missing/approximated by swamp/wetland biomes
-   - *Decision*: Defer true river generation to a later iteration; initial version uses humidity-based wetlands as river approximation.
+5. **Palette layer count is static** — Each palette layer has a fixed `layers` count. Unlike vanilla's variable-depth dirt layers (sometimes 1 deep, sometimes 3), Terra always places exactly the configured depth. Variation requires adding a noise sampler to the layer.
 
 ## Verification Plan
 
-1. **Unit test**: Create world with `continental_floor = continental_ceiling = -0.5` → verify all chunks report ocean biomes and no land terrain generates.
-2. **Unit test**: Create world with `temperature_floor = temperature_ceiling = 0.8` → verify only desert/savanna/jungle/badlands biomes appear, and vanilla cacti/acacia trees spawn.
-3. **Integration test**: Default parameters world. Fly across X/Z and verify biome transitions follow latitudinal pattern: frozen poles → temperate → hot equator (with noise patchiness).
-4. **3D test**: Descend below Y=0 in default world. Verify `deep_dark` biome appears in some regions (skulk blocks, wardens spawnable) and `lush_caves` / `dripstone_caves` in others.
-5. **Terrain linkage**: Verify each biome generates terrain at correct height (plains flat, jagged peaks tall) via terrain sampler from Work Item 3.
+1. **Visual test**: Load world, verify grass blocks on top of dirt in plains/forest.
+2. **Visual test**: Verify sand layers in desert, terracotta in badlands.
+3. **Visual test**: Verify snow layers in snowy biomes, ice spikes in ice_spikes biome.
+4. **Visual test**: Descend below Y=0, verify deepslate replaces stone at Y=7, bedrock at Y=-60.
+5. **Visual test**: Fly over ocean, verify sand/gravel seafloor with water above.
+6. **3D test**: Check cave biomes — dripstone blocks in dripstone caves, moss in lush caves.
+7. **Slant test**: Find steep cliff in windswept_hills/jagged_peaks, verify stone shows through grass/snow.
